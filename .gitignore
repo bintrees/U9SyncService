@@ -1,0 +1,16 @@
+﻿# Object file
+*.o
+
+# Ada Library Information
+*.ali
+*.suo
+
+##忽略该文件夹，不提交到Git 
+.vs/
+packages/
+U9SyncService/bin/
+U9SyncService/obj/
+/bin/
+/obj/
+
+

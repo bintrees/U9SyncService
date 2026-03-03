@@ -1,0 +1,16 @@
+2026-02-26 10:39:53.955 +08:00 [INF]  CRM --> U9 Worker started
+2026-02-26 10:42:32.168 +08:00 [INF] Application started. Press Ctrl+C to shut down.
+2026-02-26 10:42:32.183 +08:00 [INF] Hosting environment: Development
+2026-02-26 10:42:32.186 +08:00 [INF] Content root path: E:\ERP数据\U9SyncService
+2026-02-26 11:02:43.468 +08:00 [INF]  CRM --> U9 Worker started
+2026-02-26 11:02:52.285 +08:00 [INF] Application started. Press Ctrl+C to shut down.
+2026-02-26 11:02:52.306 +08:00 [INF] Hosting environment: Development
+2026-02-26 11:02:52.309 +08:00 [INF] Content root path: E:\ERP数据\U9SyncService
+2026-02-26 11:03:10.767 +08:00 [INF] 获取到 1 条待处理队列数据
+2026-02-26 11:04:01.429 +08:00 [INF] 开始处理队列项: 14356, 类型: CustomerCreate, 键值: C00182333
+2026-02-26 11:08:39.588 +08:00 [INF]  CRM --> U9 Worker started
+2026-02-26 11:14:31.539 +08:00 [INF] Application started. Press Ctrl+C to shut down.
+2026-02-26 11:14:31.558 +08:00 [INF] Hosting environment: Development
+2026-02-26 11:14:31.561 +08:00 [INF] Content root path: E:\ERP数据\U9SyncService
+2026-02-26 11:14:35.289 +08:00 [INF] 获取到 1 条待处理队列数据
+2026-02-26 11:14:41.473 +08:00 [INF] 开始处理队列项: 14356, 类型: CustomerCreate, 键值: C00182333
