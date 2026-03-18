@@ -1,6 +1,7 @@
 ﻿using MySqlX.XDevAPI.Common;
 using System;
 using System.Collections.Generic;
+using System.Data;
 using System.Linq;
 using System.Text;
 using System.Text.Json;
@@ -47,10 +48,14 @@ namespace U9SyncService
         public async Task SyncAccounts()
         {
             var accounts = await _accountRepo.QueryAsync(
-                "select * from CV_Account where CreateDate >='2023-01-01' and ISNULL(Status,'')!='200' ",
+                "select * from CV_Account where CreateDate >='2025-01-01' and Status is null ",
                 dbName: DbNames.Middle.ToString());
 
-            foreach (var acc in accounts)
+            var existQueues = await GetQueuesAsync("CustomerCreate");
+            var sicCodes = existQueues.Select(p => p.SourceKey).ToList();
+            var toInsert = accounts.Where(p => !sicCodes.Contains(p.SicCode)).ToList();
+
+            foreach (var acc in toInsert)
             {
                 var queue = new SyncQueue
                 {
@@ -76,7 +81,7 @@ namespace U9SyncService
         {
            
             var projects = await _projectRepo.QueryAsync(
-                "select top 300 * from CV_Project where CreateDate >='2025-01-01' or DealNum ='P230220175714'",
+                "select top 300 * from CV_Project where CreateDate >='2025-01-01'",
                 dbName: DbNames.Middle.ToString());
 
             foreach (var proj in projects)
@@ -159,6 +164,20 @@ namespace U9SyncService
             }
 
         }
+
+        /// <summary>
+        /// 查询目前的队列
+        /// </summary>
+        /// <param name="optType"></param>
+        /// <returns></returns>
+        public async Task<IEnumerable<SyncQueue>> GetQueuesAsync(string optType)
+        {
+           var queues =await _queueRepo.QueryAsync($"SELECT * FROM SyncQueue WHERE OptType = '{optType}'");
+
+            return queues;
+        }
+
+
     }
 
     public interface ICRMSyncService

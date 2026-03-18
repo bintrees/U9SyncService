@@ -11,15 +11,17 @@ namespace U9SyncService.Entities
         public int? AccountId { get; set; }
         public string DealNum { get; set; }
         public string Deal { get; set; }
+        public string Account { get; set; }
         public string Owner { get; set; }
         public string BalanType { get; set; }
         public string ProjectAttribute { get; set; }
         public string SignedComp { get; set; }
-        public int Parent { get; set; }
+        public string Parent { get; set; }
         public bool IsSubitem { get; set; }
         public string Address1 { get; set; }
         public string CurrentDealStage { get; set; }
         public DateTime CreateDate { get; set; }
         public int ProjectId { get; set; }
+        public string? U9Code { get; set; }
     }
 }

@@ -353,7 +353,7 @@ public class Worker : BackgroundService
     private async Task<string> BuildCustomerCreateBody(SyncQueue queue)
     {
         Dictionary<string, object> customerData = new Dictionary<string, object>();
-
+        var users = await GetUsers();
         // 根据 EditFlag 处理是创建还是更新
         bool isEdit = queue.EditFlag == 1;
         string optType = isEdit ? "CustomerUpdate" : "CustomerCreate";
@@ -369,7 +369,7 @@ public class Worker : BackgroundService
             }
             var updateRequest = new
             {
-                EntCode = "001",
+                EntCode = "002",
                 OrgCode = "100",
                 UserCode = "U9admin",
                 OptType = optType,
@@ -390,7 +390,7 @@ public class Worker : BackgroundService
                         PrivateDescSeg2 = cus.AccountEN,
                         PrivateDescSeg3 = cus.SalesLine,
                         PubDescSeg4 = cus.Owner,
-                        PubDescSeg5 = cus.Department,
+                        PubDescSeg5 = users.FirstOrDefault(p => p.UserName == cus.Owner)?.Territory,
                         PrivateDescSeg4 = cus.ShipAddress,
                         PrivateDescSeg5 = cus.Contact,
                         PrivateDescSeg6 = cus.Phone,
@@ -417,7 +417,7 @@ public class Worker : BackgroundService
             // 创建U9接口所需的数据结构
             var createRequest = new
             {
-                EntCode = "001",
+                EntCode = "002",
                 OrgCode = "100",
                 UserCode = "U9admin",
                 OptType = optType,
@@ -438,7 +438,7 @@ public class Worker : BackgroundService
                         PrivateDescSeg2 = GetValueOrDefault(customerData, "accountEN"),
                         PrivateDescSeg3 = GetValueOrDefault(customerData, "salesLine"),
                         PubDescSeg4 = GetValueOrDefault(customerData, "owner"),
-                        PubDescSeg5 = GetValueOrDefault(customerData, "department"),
+                        PubDescSeg5 = users.FirstOrDefault(p=>p.UserName== GetValueOrDefault(customerData, "owner"))?.Territory,
                         PrivateDescSeg4 = GetValueOrDefault(customerData, "shipAddress"),
                         PrivateDescSeg5 = GetValueOrDefault(customerData, "contact"),
                         PrivateDescSeg6 = GetValueOrDefault(customerData, "phone"),
@@ -467,8 +467,8 @@ public class Worker : BackgroundService
         string optType = isEdit ? "ProjectUpdate" : "ProjectCreate";
 
         // 所有项目列表
-        var projects = await _projectRepo.QueryAsync("select * from CV_Project ",
-   dbName: DbNames.Middle.ToString());
+        var projects = await _projectRepo.QueryAsync("select * from CV_Project ",   dbName: DbNames.Middle.ToString());
+        var accounts = await _accountRepo.QueryAsync("select * from CV_Account ", dbName: DbNames.Middle.ToString());
 
         var users = await GetUsers();
         if (isEdit)
@@ -477,6 +477,8 @@ public class Worker : BackgroundService
             //   dbName: DbNames.Middle.ToString())).FirstOrDefault();
 
             var project = projects.Where(p => p.DealNum == queue.SourceKey).FirstOrDefault();
+            var account = accounts.Where(p => p.AccountId == project?.AccountId).FirstOrDefault();
+
             if (project == null)
             {
                 _logger.LogWarning($"未找到数据: {queue.SourceKey}");
@@ -486,7 +488,7 @@ public class Worker : BackgroundService
 
             var requestData = new
             {
-                EntCode = "001",
+                EntCode = "002",
                 OrgCode = "100",
                 UserCode = "U9admin",
                 OptType = optType,
@@ -494,19 +496,21 @@ public class Worker : BackgroundService
                 {
                     Code = queue.SourceKey,
                     Name = project.Deal,
+                    Customer = account?.U9Code ?? "",
                     ProjectType = "2003", // 默认2003- 订单项目
                     PubPriDt = new
                     {
                         PubDescSeg4 = project.Owner,
                         PubDescSeg5 = users.Where(p => p.UserName == project.Owner)?.FirstOrDefault()?.Territory,
-                        PrivateDescSeg1 = project.Parent == 0 ? project.DealNum : projects.Where(p => p.ProjectId == project.Parent)?.FirstOrDefault()?.DealNum,
+                        PrivateDescSeg1 = project.IsSubitem ? project.Parent :null,
                         PrivateDescSeg2 = project.BalanType,
                         PrivateDescSeg3 = project.ProjectAttribute,
                         PrivateDescSeg4 = Dicts.GetCompany(project.SignedComp),
                         PrivateDescSeg5 = project.Address1,
                         PrivateDescSeg6 = "",
                         PrivateDescSeg7 = "",
-                        PrivateDescSeg10 = project.IsSubitem ? true : false
+                        PrivateDescSeg10 = project.IsSubitem ? true : false,
+                        PrivateDescSeg11 =project.Account
 
                     }
                 }
@@ -519,6 +523,7 @@ public class Worker : BackgroundService
             // 解析队列中的Payload
             var projectData = JsonHelper.Deserialize<Dictionary<string, object>>(queue.Payload);
 
+            var project = projects.Where(p => p.DealNum == queue.SourceKey).FirstOrDefault();
 
             // 创建U9接口所需的数据结构
             bool isSubItem;
@@ -527,7 +532,7 @@ public class Worker : BackgroundService
 
             var requestData = new
             {
-                EntCode = "001",
+                EntCode = "002",
                 OrgCode = "100",
                 UserCode = "U9admin",
                 OptType = optType,
@@ -535,19 +540,21 @@ public class Worker : BackgroundService
                 {
                     Code = queue.SourceKey,
                     Name = projectData.TryGetValue("deal", out var name) ? name?.ToString() : "",
+                    Customer = project?.U9Code ?? "",
                     ProjectType = "2003",
                     PubPriDt = new
                     {
                         PubDescSeg4 = projectData.TryGetValue("owner", out var owner) ? owner?.ToString() : "",
                         PubDescSeg5 = users.Where(p => p.UserName == owner?.ToString())?.FirstOrDefault()?.Territory,
-                        PrivateDescSeg1 = projectData.TryGetValue("parent", out var Parent) ? projects.Where(p => p.ProjectId == int.Parse(Parent.ToString()))?.FirstOrDefault()?.DealNum: queue.SourceKey,
+                        PrivateDescSeg1 = isSubItem ? project?.Parent :null , //queue.SourceKey
                         PrivateDescSeg2 = projectData.TryGetValue("balanType", out var BalanType) ? BalanType?.ToString() : "",
                         PrivateDescSeg3 = projectData.TryGetValue("projectAttribute", out var ProjectAttribute) ? ProjectAttribute?.ToString() : "",
                         PrivateDescSeg4 = projectData.TryGetValue("signedComp", out var SignedComp) ? Dicts.GetCompany(SignedComp?.ToString() ?? "") : "",
                         PrivateDescSeg5 = projectData.TryGetValue("address1", out var Address1) ? Address1?.ToString() : "",
                         PrivateDescSeg6 = "",
                         PrivateDescSeg7 = "",
-                        PrivateDescSeg10 = isSubItem
+                        PrivateDescSeg10 = isSubItem,
+                        PrivateDescSeg11 = projectData.TryGetValue("Account", out var Account) ? Account?.ToString() : "",
 
                     }
                 }
@@ -585,7 +592,7 @@ public class Worker : BackgroundService
             // 构建请求数据
             var requestData = new
             {
-                EntCode = "001",
+                EntCode = "002",
                 OrgCode = "100",
                 UserCode = "U9admin",
                 OptType = optType,

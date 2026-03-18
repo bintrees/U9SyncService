@@ -9,6 +9,7 @@ namespace U9SyncService.Entities
     public class CV_Account
     {
         public int AccountId { get; set; }
+        public string? U9Code { get; set; }
         public string SicCode { get; set; }
         public string Account { get; set; }
         public string AccountEN { get; set; }

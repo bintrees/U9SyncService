@@ -10,6 +10,7 @@ namespace U9SyncService.Db
     {
         Main,
         Middle,
-        Third
+        Third,
+        Other
     }
 }
