@@ -1,10 +1,12 @@
 using Microsoft.Extensions.Options;
+using Mysqlx.Session;
 using MySqlX.XDevAPI.Common;
 using System.Data;
 using System.Net.Http.Headers;
 using System.Reflection.Emit;
 using System.Security.Cryptography.Pkcs;
 using System.Text;
+using System.Text.Json;
 using System.Threading.Tasks;
 using U9SyncService.Db;
 using U9SyncService.Entities;
@@ -19,13 +21,13 @@ public class Worker : BackgroundService
     private readonly IRepository<SyncQueue> _repo;
     private readonly IRepository<CV_Account> _accountRepo;
     private readonly IRepository<CV_Project> _projectRepo;
-    private readonly IRepository<ProjectLedger> _projectLedgerRepo;
+    private readonly IRepository<V_ProjectLedger> _projectLedgerRepo;
     private readonly AppOptions _options;
     private readonly ILogger<Worker> _logger;
 
 
     public Worker(ICRMSyncService syncService, ILogger<Worker> logger, IRepository<SyncQueue> repository,
-        IRepository<CV_Account> accountRepo, IRepository<CV_Project> projectRepo,IRepository<ProjectLedger> projectLedgerRepo,
+        IRepository<CV_Account> accountRepo, IRepository<CV_Project> projectRepo,IRepository<V_ProjectLedger> projectLedgerRepo,
         IOptions<AppOptions> options)
     {
         _syncService = syncService;
@@ -105,7 +107,7 @@ public class Worker : BackgroundService
             {
                 await _repo.ExecuteAsync(
                     "UPDATE SyncQueue SET State = 1, ErrorMsg = @Message,CbCode = @CbCode,RetryCount +=1, UpdateTime = GETDATE() WHERE Id = @Id",
-                    new { item.Id, result.Message, result.CbCode });
+                    new { Id=item.Id, result.Message, result.CbCode });
             }
         }
         else
@@ -133,7 +135,7 @@ public class Worker : BackgroundService
         await _syncService.WriteBack(item.SourceKey, result.CbCode, result.Message);
 
         await _repo.ExecuteAsync("UPDATE SyncQueue SET State = @State, ErrorMsg = @ErrorMsg,CbCode = @CbCode, RetryCount +=1,UpdateTime = GETDATE() WHERE Id = @Id",
-            new { item.Id, State = result.Success ? 1 : 2, ErrorMsg = result.Message, result.CbCode });
+            new {Id= item.Id, State = result.Success ? 1 : 2, ErrorMsg = result.Message, result.CbCode });
     }
 
     private async Task<(bool Success, string Message, string? CbCode)> PostToU9(SyncQueue queue)
@@ -149,7 +151,7 @@ public class Worker : BackgroundService
             httpClient.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
 
             var content = new StringContent(requestBody, Encoding.UTF8, "application/json");
-            var response = await httpClient.PostAsync("http://192.168.9.210/KLWebAPI/API/KLAPIPack", content);
+            var response = await httpClient.PostAsync("http://192.168.9.213/KLWebAPI/API/KLAPIPack", content);
 
             string responseContent = await response.Content.ReadAsStringAsync();
 
@@ -187,15 +189,43 @@ public class Worker : BackgroundService
 
     }
 
-    private async Task PostToU9(List<ProjectLedger> ledgers)
+    private async Task PostToU9(List<V_ProjectLedger> ledgers)
     {
         if (ledgers == null || ledgers.Count == 0)
             return;
+           
 
         foreach (var ledger in ledgers)
         {
             try
             {
+                // 台账中项目是否已同步
+                var project = (await _syncService.GetQueuesAsync("ProjectCreate", ledger.ProjectNum)).FirstOrDefault();
+                if (project == null || project.State != 1)
+                {
+                    await _syncService.SyncProjects(ledger.ProjectNum);
+                    await ConsumeQueue();
+                }
+                else if(project != null && project.State == 1)
+                {
+                    await _repo.ExecuteAsync("UPDATE SyncQueue SET RetryCount =3,EditFlag=1, UpdateTime = GETDATE() WHERE SourceKey = @SourceKey",
+                       new { SourceKey= ledger.ProjectNum });
+                }
+
+                // 客户是否同步成功
+                if (string.IsNullOrEmpty(ledger.CusCode))
+                {
+                    var sicCide = "C" + ledger.AccountId.ToString().PadLeft(8, '0');
+                    var acQueue = (await GetQueuesWhere(sicCide)).FirstOrDefault();
+
+                    if(acQueue != null)
+                    {
+                        await _repo.ExecuteAsync("UPDATE SyncQueue SET RetryCount =3, UpdateTime = GETDATE() WHERE SourceKey = @SourceKey",
+                        new { acQueue.SourceKey});
+                    }
+                }
+
+
                 string requestBody = await BuildProLedgerCreateBody(ledger);
 
                 using var httpClient = new HttpClient();
@@ -203,7 +233,7 @@ public class Worker : BackgroundService
                 httpClient.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
 
                 var content = new StringContent(requestBody, Encoding.UTF8, "application/json");
-                var response = await httpClient.PostAsync("http://192.168.9.210/KLWebAPI/API/KLAPIPack", content);
+                var response = await httpClient.PostAsync("http://192.168.9.213/KLWebAPI/API/KLAPIPack", content);
 
                 string responseContent = await response.Content.ReadAsStringAsync();
 
@@ -217,16 +247,16 @@ public class Worker : BackgroundService
                             case "A":
                                 // 更新台账状态为已同步 (0表示已成功)
                                 await _projectLedgerRepo.ExecuteAsync(
-                                    "UPDATE ProjectLedger SET State = 0,TransType = 'U', U9Code = @DocNo WHERE Id = @Id",
-                                    new { ledger.Id, responseObj.DocNo },
+                                    "UPDATE SalesContract SET State = 0,TransType = 'U',SyncMsg ='同步成功', U9Code = @DocNo WHERE Id = @Id",
+                                    new {Id= ledger.RefId, responseObj.DocNo },
                                     dbName: DbNames.Third.ToString());
                                 break;
 
-                                default:
+                            default:
                                 // 更新台账状态为已同步 (0表示已成功)
                                 await _projectLedgerRepo.ExecuteAsync(
-                                    "UPDATE ProjectLedger SET State = 0  WHERE Id = @Id",
-                                    new { ledger.Id },
+                                    "UPDATE SalesContract SET State = 0  WHERE Id = @Id",
+                                    new {Id= ledger.RefId },
                                     dbName: DbNames.Third.ToString());
                                 break;
 
@@ -237,10 +267,10 @@ public class Worker : BackgroundService
                     else
                     {
 
-                        await _projectLedgerRepo.ExecuteAsync("UPDATE ProjectLedger SET State = -1,ErrorMsg = @ErrorMsg WHERE Id = @Id",
-                        new { Id = ledger.Id, ErrorMsg = responseObj?.Msg },
+                        await _projectLedgerRepo.ExecuteAsync("UPDATE SalesContract SET State = -1,SyncMsg = @ErrorMsg WHERE Id = @Id",
+                        new { Id = ledger.RefId, ErrorMsg = responseObj?.Msg },
                         dbName: DbNames.Third.ToString());
-                        _logger.LogWarning($"U9同步失败: {responseObj?.Msg}, Id: {ledger.Id}");
+                        _logger.LogWarning($"U9同步失败: {responseObj?.Msg}, Id: {ledger.RefId}");
 
 
                     }
@@ -255,11 +285,11 @@ public class Worker : BackgroundService
             }
             catch (Exception ex)
             {
-                // 单个项目异常不影响其他项目
-                await _projectLedgerRepo.ExecuteAsync(
-                    "UPDATE ProjectLedger SET State = -1, ErrorMsg = @ErrorMsg WHERE Id = @Id",
-                    new { Id = ledger.Id, ErrorMsg = $"处理异常: {ex.Message}" },
-                    dbName: DbNames.Third.ToString());
+                //// 单个项目异常不影响其他项目
+                //await _projectLedgerRepo.ExecuteAsync(
+                //    "UPDATE ProjectLedger SET State = -1, ErrorMsg = @ErrorMsg WHERE Id = @Id",
+                //    new { Id = ledger.Id, ErrorMsg = $"处理异常: {ex.Message}" },
+                //    dbName: DbNames.Third.ToString());
 
                 _logger.LogError(ex, $"处理项目台账异常: {ledger.Id}, 项目: {ledger.ProjectNum}");
 
@@ -335,6 +365,13 @@ public class Worker : BackgroundService
 
     }
 
+    private async Task<List<SyncQueue>> GetQueuesWhere(string? sourceKey)
+    {
+        string sql = sourceKey == null ? "SELECT  * FROM [SyncQueue]" :
+            $"SELECT  * FROM [SyncQueue] where sourceKey ='{sourceKey}'";
+        var list = await _repo.QueryAsync(sql);
+        return list.ToList();
+    }
     private async Task<string> BuildRequestBody(SyncQueue queue)
     {
         switch (queue.OptType)
@@ -367,16 +404,20 @@ public class Worker : BackgroundService
                 _logger.LogWarning($"未找到数据: {queue.SourceKey}");
                 return JsonHelper.Serialize(new { });
             }
+            // 更新客户名称用合同的
+            var projectLegder = (await _projectLedgerRepo.QueryAsync("select * from V_ProjectLedger where CusCode=@CusCode", new { CusCode = queue.CbCode }, dbName: DbNames.Third.ToString())).FirstOrDefault();
+            string cusName = projectLegder?.ClientName ?? cus.Account;
+
             var updateRequest = new
             {
-                EntCode = "002",
+                EntCode = "001", // 002
                 OrgCode = "100",
                 UserCode = "U9admin",
                 OptType = optType,
                 CustDTO = new
                 {
                     CustCode = queue.CbCode,
-                    Name = cus.Account,
+                    Name = cusName,
                     ShortName = cus.Abbreviation,
                     SearchCode = cus.SicCode,
                     CustomerCategory = "KH0201", // 默认值，可根据业务规则映射
@@ -401,6 +442,7 @@ public class Worker : BackgroundService
                         PrivateDescSeg12 = cus.City1,
                         PrivateDescSeg14 = cus.AccountGroup,
                         PrivateDescSeg15 = cus.CooperationType,
+                        PrivateDescSeg17 = users.FirstOrDefault(p => p.UserName == cus.Owner)?.Manager
 
                     }
                 }
@@ -417,7 +459,7 @@ public class Worker : BackgroundService
             // 创建U9接口所需的数据结构
             var createRequest = new
             {
-                EntCode = "002",
+                EntCode = "001",
                 OrgCode = "100",
                 UserCode = "U9admin",
                 OptType = optType,
@@ -449,7 +491,7 @@ public class Worker : BackgroundService
                         PrivateDescSeg12 = GetValueOrDefault(customerData, "city1"),
                         PrivateDescSeg14 = GetValueOrDefault(customerData, "accountGroup"),
                         PrivateDescSeg15 = GetValueOrDefault(customerData, "cooperationType"),
-
+                        PrivateDescSeg17 = users.FirstOrDefault(p => p.UserName == GetValueOrDefault(customerData, "owner"))?.Manager
                     }
                 }
             };
@@ -467,7 +509,7 @@ public class Worker : BackgroundService
         string optType = isEdit ? "ProjectUpdate" : "ProjectCreate";
 
         // 所有项目列表
-        var projects = await _projectRepo.QueryAsync("select * from CV_Project ",   dbName: DbNames.Middle.ToString());
+        var projects = await _projectRepo.QueryAsync("select a.*,b.CreateDate as CompletionDate from CV_Project a Left join MT_CRM..ProjectFinished b on a.DealNum=b.ProjectNum",   dbName: DbNames.Middle.ToString());
         var accounts = await _accountRepo.QueryAsync("select * from CV_Account ", dbName: DbNames.Middle.ToString());
 
         var users = await GetUsers();
@@ -488,7 +530,7 @@ public class Worker : BackgroundService
 
             var requestData = new
             {
-                EntCode = "002",
+                EntCode = "001",
                 OrgCode = "100",
                 UserCode = "U9admin",
                 OptType = optType,
@@ -502,16 +544,17 @@ public class Worker : BackgroundService
                     {
                         PubDescSeg4 = project.Owner,
                         PubDescSeg5 = users.Where(p => p.UserName == project.Owner)?.FirstOrDefault()?.Territory,
-                        PrivateDescSeg1 = project.IsSubitem ? project.Parent :null,
+                        PubDescSeg7 = GetProductCatalog(project.Catalog),
+                        PrivateDescSeg1 = project.IsSubitem ? project.Parent : null,
                         PrivateDescSeg2 = project.BalanType,
                         PrivateDescSeg3 = project.ProjectAttribute,
                         PrivateDescSeg4 = Dicts.GetCompany(project.SignedComp),
                         PrivateDescSeg5 = project.Address1,
-                        PrivateDescSeg6 = "",
+                        PrivateDescSeg6 = users.Where(p => p.UserName == project.Owner)?.FirstOrDefault()?.Manager,
                         PrivateDescSeg7 = "",
                         PrivateDescSeg10 = project.IsSubitem ? true : false,
-                        PrivateDescSeg11 =project.Account
-
+                        PrivateDescSeg11 = project.Account,
+                        PrivateDescSeg13 = project.CompletionDate ?? null
                     }
                 }
             };
@@ -525,14 +568,38 @@ public class Worker : BackgroundService
 
             var project = projects.Where(p => p.DealNum == queue.SourceKey).FirstOrDefault();
 
+
             // 创建U9接口所需的数据结构
-            bool isSubItem;
-            isSubItem = projectData.TryGetValue("isSubitem", out var value) && value is bool subitemBool
-                ? subitemBool : false;
+            bool isSubItem =false;
+            //isSubItem = projectData.TryGetValue("isSubitem", out var value)   && value is bool subitemBool
+            //    ? subitemBool : false;
+
+            if (projectData.TryGetValue("isSubitem", out var value) && value is JsonElement element)
+            {
+                // 如果 JSON 是布尔值
+                if (element.ValueKind == JsonValueKind.True)
+                    isSubItem = true;
+                else if (element.ValueKind == JsonValueKind.False)
+                    isSubItem = false;
+                else if (element.ValueKind == JsonValueKind.String)
+                    isSubItem = bool.TryParse(element.GetString(), out var result) && result;
+                else
+                    isSubItem = false; // 其他情况默认 false
+            }
+
+            /*  if (projectData.TryGetValue("isSubitem", out var value))
+              {
+                  if (value is bool b) // 如果 JSON 直接是布尔值
+                      isSubItem = b;
+                  else if (value is string s) // 如果 JSON 是字符串 "true" / "false"
+                      isSubItem = bool.TryParse(s, out var result) && result;
+                  else if (value != null) // 其他类型，可以尝试 Convert
+                      isSubItem = Convert.ToBoolean(value);
+              }*/
 
             var requestData = new
             {
-                EntCode = "002",
+                EntCode = "001",
                 OrgCode = "100",
                 UserCode = "U9admin",
                 OptType = optType,
@@ -546,15 +613,16 @@ public class Worker : BackgroundService
                     {
                         PubDescSeg4 = projectData.TryGetValue("owner", out var owner) ? owner?.ToString() : "",
                         PubDescSeg5 = users.Where(p => p.UserName == owner?.ToString())?.FirstOrDefault()?.Territory,
+                        PubDescSeg7 = GetProductCatalog(project.Catalog),
                         PrivateDescSeg1 = isSubItem ? project?.Parent :null , //queue.SourceKey
                         PrivateDescSeg2 = projectData.TryGetValue("balanType", out var BalanType) ? BalanType?.ToString() : "",
                         PrivateDescSeg3 = projectData.TryGetValue("projectAttribute", out var ProjectAttribute) ? ProjectAttribute?.ToString() : "",
                         PrivateDescSeg4 = projectData.TryGetValue("signedComp", out var SignedComp) ? Dicts.GetCompany(SignedComp?.ToString() ?? "") : "",
                         PrivateDescSeg5 = projectData.TryGetValue("address1", out var Address1) ? Address1?.ToString() : "",
-                        PrivateDescSeg6 = "",
+                        PrivateDescSeg6 = users.Where(p => p.UserName == owner?.ToString())?.FirstOrDefault()?.Manager,
                         PrivateDescSeg7 = "",
                         PrivateDescSeg10 = isSubItem,
-                        PrivateDescSeg11 = projectData.TryGetValue("Account", out var Account) ? Account?.ToString() : "",
+                        PrivateDescSeg11 = projectData.TryGetValue("account", out var Account) ? Account?.ToString() : "",
 
                     }
                 }
@@ -565,7 +633,7 @@ public class Worker : BackgroundService
 
     }
 
-    public async Task<string> BuildProLedgerCreateBody(ProjectLedger ledger)
+    public async Task<string> BuildProLedgerCreateBody(V_ProjectLedger ledger)
     {
         // 根据 EditFlag 决定是创建还是更新
         bool isEdit = ledger.TransType == "U";
@@ -575,16 +643,18 @@ public class Worker : BackgroundService
         {
             // 构建收款阶段明细
             var stageDetails = new List<object>();
-            if (ledger.ProjectRecBillStage != null && ledger.ProjectRecBillStage.Any())
+            if (ledger.ProRecBillStage != null && ledger.ProRecBillStage.Any())
             {
-                foreach (var stage in ledger.ProjectRecBillStage)
+                int i = 0;
+                foreach (var stage in ledger.ProRecBillStage)
                 {
+                    i++;
                     stageDetails.Add(new
                     {
-                        LineNum = stage.LineNum.ToString(),
-                        ProjectRecStage = stage.RecStage,
+                        LineNum = i,
+                        ProjectRecStage = stage.PaymentStage,
                         StageRatio = stage.Ratio,
-                        StageAmount = stage.Amount
+                        StageAmount = ledger.ContractAmount * stage.Ratio/100
                     });
                 }
             }
@@ -592,7 +662,7 @@ public class Worker : BackgroundService
             // 构建请求数据
             var requestData = new
             {
-                EntCode = "002",
+                EntCode = "001",
                 OrgCode = "100",
                 UserCode = "U9admin",
                 OptType = optType,
@@ -600,14 +670,14 @@ public class Worker : BackgroundService
                 {
                     DocumentType = "001",
                     Project = ledger.ProjectNum,
-                    Customer = ledger.Customer,
-                    SignDate = ledger.SignDate.ToString("yyyy-MM-dd"),
+                    Customer = ledger.CusCode,
+                    SignDate = ledger.SignedDate.ToString("yyyy-MM-dd"),
                     BidBond = ledger.BidBond,
                     Warranty = ledger.Warranty,
                     ContractType = ledger.ContractType,
                     IPFee = ledger.IPFee,
                     ContractAmount = ledger.ContractAmount,
-                    SignCompany = ledger.SignCompany,
+                    SignCompany = Dicts.GetCompany(ledger.SignCompany),
                     Currency = ledger.Currency,
                     ProjectRecBillStage = stageDetails.ToArray()
                 }
@@ -641,5 +711,47 @@ public class Worker : BackgroundService
         var _users = (await _syncService.GetUsers()).ToList();
 
         return _users;
+    }
+
+    private string GetProductCatalog(string name)
+    {
+        string code = "";
+        switch (name)
+        {
+
+            case "户外专线":
+                code = "01";
+                break;
+            case "水乐专线":
+                code = "02";
+                break;
+            case "淘气堡专线":
+                code = "03";
+                break;
+            case "幼教专线":
+                code = "04";
+                break;
+            case "安装":
+                code = "05";
+                break;
+            case "运杂费":
+                code = "06";
+                break;
+            case "咨询设计":
+                code = "07";
+                break;
+            case "居间":
+                code = "08";
+                break;
+            case "对外采购":
+                code = "09";
+                break;
+            case "其他":
+                code = "10";
+                break;
+           
+        }
+
+        return code;
     }
 }

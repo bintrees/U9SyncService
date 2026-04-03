@@ -2,10 +2,12 @@ using U9SyncService;
 using Serilog;
 using U9SyncService.Db;
 
+// 使用 AppContext.BaseDirectory 程序执行目录
+var logPath = Path.Combine(AppContext.BaseDirectory, "logs", "u9sync-.log");
+
 Log.Logger = new LoggerConfiguration()
-    .WriteTo.File(
-        "logs\\u9sync-.log",
-        rollingInterval: RollingInterval.Day)
+    .MinimumLevel.Warning()  // 设置最小日志级别
+    .WriteTo.File(logPath, rollingInterval: RollingInterval.Day)
     .CreateLogger();
 
 

@@ -15,6 +15,7 @@ namespace U9SyncService.Entities
         public string Owner { get; set; }
         public string BalanType { get; set; }
         public string ProjectAttribute { get; set; }
+        public string Catalog { get; set; }
         public string SignedComp { get; set; }
         public string Parent { get; set; }
         public bool IsSubitem { get; set; }
@@ -22,6 +23,7 @@ namespace U9SyncService.Entities
         public string CurrentDealStage { get; set; }
         public DateTime CreateDate { get; set; }
         public int ProjectId { get; set; }
+        public DateTime? CompletionDate { get; set; }
         public string? U9Code { get; set; }
     }
 }
