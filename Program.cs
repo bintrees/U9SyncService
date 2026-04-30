@@ -1,6 +1,9 @@
 using U9SyncService;
 using Serilog;
 using U9SyncService.Db;
+using System.Net;
+
+ServicePointManager.SecurityProtocol = SecurityProtocolType.Tls12 | SecurityProtocolType.Tls13;
 
 // 使用 AppContext.BaseDirectory 程序执行目录
 var logPath = Path.Combine(AppContext.BaseDirectory, "logs", "u9sync-.log");

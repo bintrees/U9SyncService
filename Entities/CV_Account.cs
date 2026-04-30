@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
+using U9SyncService.Utility;
 
 namespace U9SyncService.Entities
 {
@@ -30,5 +31,17 @@ namespace U9SyncService.Entities
         public string AccountType { get; set; }
         public string ClientState { get; set; }
         public DateTime CreateDate { get; set; }
+
+        public string GetCurrency(string? Currency = null)
+        {
+            if (AccountType == "国内客户")
+            {
+                return CurrencyHelper.GetCurrencyKey("人民币");
+            }
+            return CurrencyHelper.GetCurrencyKey(Currency);
+
+        }
+
+
     }
 }

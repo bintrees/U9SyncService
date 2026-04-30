@@ -88,7 +88,7 @@ public class Worker : BackgroundService
     private async Task ProcessQueueItem(SyncQueue item)
     {
         _logger.LogInformation($"开始处理队列项: {item.Id}, 类型: {item.OptType}, 键值: {item.SourceKey}");
-
+        bool IsEdit = item.EditFlag == 1;
         // 调用U9接口
         var result = await PostToU9(item);
 
@@ -96,7 +96,7 @@ public class Worker : BackgroundService
         if (result.Success)
         {
             // 如编辑模式，成功后将EditFlag重置为0
-            if (item.EditFlag == 1)
+            if (IsEdit)
             {
                 await _repo.ExecuteAsync(
                     "UPDATE SyncQueue SET EditFlag = 0,UpdateTime = GETDATE() WHERE Id = @Id",
@@ -113,7 +113,7 @@ public class Worker : BackgroundService
         else
         {
             // 如编辑模式，成功后将EditFlag重置为0
-            if (item.EditFlag == 1)
+            if (IsEdit)
             {
                 // 失败时保持EditFlag不变，便于下次重试
                 await _repo.ExecuteAsync(
@@ -132,7 +132,7 @@ public class Worker : BackgroundService
         }
 
         // 回写CRM
-        await _syncService.WriteBack(item.SourceKey, result.CbCode, result.Message);
+        await _syncService.WriteBack(item.SourceKey, result.CbCode, result.Message,result.Success,IsEdit);
 
         await _repo.ExecuteAsync("UPDATE SyncQueue SET State = @State, ErrorMsg = @ErrorMsg,CbCode = @CbCode, RetryCount +=1,UpdateTime = GETDATE() WHERE Id = @Id",
             new {Id= item.Id, State = result.Success ? 1 : 2, ErrorMsg = result.Message, result.CbCode });
@@ -167,9 +167,14 @@ public class Worker : BackgroundService
                     // 提取错误信息
                     string errorMessage = !string.IsNullOrEmpty(responseObj?.Msg) ? responseObj.Msg : "";
 
-
                     _logger.LogWarning($"U9同步失败: {errorMessage}, 编号: {queue.SourceKey}");
 
+                    // 新建时与其他CRM客户重名，也算成功，返回其他客户SicCode -U9CusCode
+                    if (errorMessage.Contains("错误信息：“已经存在重复的客户名称:"))
+                    {
+                        string str = errorMessage.Length >= 9 ? errorMessage.Substring(errorMessage.Length - 10,9) : errorMessage;
+                        return (true,$"205-重名创建成功-{str}" , errorMessage.Substring(0, 8));
+                    }
                     return (false, errorMessage, null);
                 }
 
@@ -220,7 +225,9 @@ public class Worker : BackgroundService
 
                     if(acQueue != null)
                     {
-                        await _repo.ExecuteAsync("UPDATE SyncQueue SET RetryCount =3, UpdateTime = GETDATE() WHERE SourceKey = @SourceKey",
+                        string sql = acQueue.State == 1 ? "UPDATE SyncQueue SET RetryCount =3,EditFlag =1 WHERE SourceKey = @SourceKey"
+                            : "UPDATE SyncQueue SET RetryCount =3 WHERE SourceKey = @SourceKey";
+                        await _repo.ExecuteAsync(sql,
                         new { acQueue.SourceKey});
                     }
                 }
@@ -395,37 +402,40 @@ public class Worker : BackgroundService
         bool isEdit = queue.EditFlag == 1;
         string optType = isEdit ? "CustomerUpdate" : "CustomerCreate";
 
+        var cus = (await _accountRepo.QueryAsync("select * from CV_Account where SicCode =@SicCode ", new { SicCode = queue.SourceKey }, dbName: DbNames.Middle.ToString())).FirstOrDefault();
+
+        // 更新客户名称用合同的
+        var projectLegder = (await _projectLedgerRepo.QueryAsync("select * from V_ProjectLedger where CusCode=@CusCode", new { CusCode = queue.CbCode }, dbName: DbNames.Third.ToString())).FirstOrDefault();
+        string cusName = projectLegder?.ClientName ?? cus.Account;
+
         if (isEdit)
         {
-            var cus = (await _accountRepo.QueryAsync("select * from CV_Account where SicCode =@SicCode ", new { SicCode = queue.SourceKey },
-                dbName: DbNames.Middle.ToString())).FirstOrDefault();
+ 
             if (cus == null)
             {
                 _logger.LogWarning($"未找到数据: {queue.SourceKey}");
                 return JsonHelper.Serialize(new { });
             }
-            // 更新客户名称用合同的
-            var projectLegder = (await _projectLedgerRepo.QueryAsync("select * from V_ProjectLedger where CusCode=@CusCode", new { CusCode = queue.CbCode }, dbName: DbNames.Third.ToString())).FirstOrDefault();
-            string cusName = projectLegder?.ClientName ?? cus.Account;
 
             var updateRequest = new
             {
-                EntCode = "001", // 002
+                EntCode = "001",
                 OrgCode = "100",
                 UserCode = "U9admin",
                 OptType = optType,
                 CustDTO = new
                 {
-                    CustCode = queue.CbCode,
+                    CustCode = cus.U9Code,
                     Name = cusName,
                     ShortName = cus.Abbreviation,
                     SearchCode = cus.SicCode,
                     CustomerCategory = "KH0201", // 默认值，可根据业务规则映射
-                    TradeCurrency = "C009",
+                    TradeCurrency = cus.GetCurrency(projectLegder?.Currency),
                     TaxSchedule = "TS01",
-                    PayCurrency = "C009",
+                    PayCurrency = cus.GetCurrency(projectLegder?.Currency),
                     RecervalTerm = "YZ01",
                     ARConfirmTerm = "YZ01",
+                    ShippmentRule = "CH01",
                     PubPriDt = new
                     {
                         PrivateDescSeg2 = cus.AccountEN,
@@ -470,11 +480,12 @@ public class Worker : BackgroundService
                     ShortName = customerData.TryGetValue("abbreviation", out var shortName) ? shortName?.ToString() : "",
                     SearchCode = customerData.TryGetValue("sicCode", out var searchCode) ? searchCode?.ToString() : "",
                     CustomerCategory = "KH0201", // 默认值，可根据业务规则映射
-                    TradeCurrency = "C009",
+                    TradeCurrency = cus.GetCurrency(projectLegder?.Currency),
                     TaxSchedule = "TS01",
-                    PayCurrency = "C009",
+                    PayCurrency = cus.GetCurrency(projectLegder?.Currency),
                     RecervalTerm = "YZ01",
                     ARConfirmTerm = "YZ01",
+                    ShippmentRule = "CH01",
                     PubPriDt = new
                     {
                         PrivateDescSeg2 = GetValueOrDefault(customerData, "accountEN"),
@@ -659,6 +670,11 @@ public class Worker : BackgroundService
                 }
             }
 
+            // 构建合同明细 子项目合同
+            var contractLines = new List<object>();
+
+
+
             // 构建请求数据
             var requestData = new
             {
@@ -680,6 +696,7 @@ public class Worker : BackgroundService
                     SignCompany = Dicts.GetCompany(ledger.SignCompany),
                     Currency = ledger.Currency,
                     ProjectRecBillStage = stageDetails.ToArray()
+                   // ProductLineAmount = ledger.ContractLines
                 }
             };
 

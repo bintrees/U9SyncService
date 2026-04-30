@@ -80,7 +80,7 @@ namespace U9SyncService
 
         public async Task SyncProjects(string? projectNum = null)
         {
-            string sql = projectNum == null ? "select * from CV_Project where CreateDate >='2026-01-01' order by ProjectId desc" :
+            string sql = projectNum == null ? "select a.* from CV_Project a Left JOIN MT_CRM..CT_Project b on b.ProjectNum=a.DealNum where a.status is null and (a.CreateDate >='2026-01-01' or b.CT_ProjectId is not null ) order by ProjectId desc" :
                  $"select * from CV_Project where DealNum='{projectNum}'";
  
             var projects = await _projectRepo.QueryAsync(sql,dbName: DbNames.Middle.ToString());
@@ -104,6 +104,31 @@ namespace U9SyncService
         }
 
         /// <summary>
+        /// 递归 获取项目树
+        /// </summary>
+        /// <param name="parentNum"></param>
+        /// <param name="projectList"></param>
+        /// <returns></returns>
+        public List<CV_Project> GetProjectTree(string parentNum, List<CV_Project> projectList)
+        {
+            var result = new List<CV_Project>();
+
+            var parent = projectList.FirstOrDefault(p => p.DealNum == parentNum);
+            if (parent != null)
+                result.Add(parent);
+
+            var children = projectList.Where(p => p.Parent == parentNum).ToList();
+
+            foreach (var child in children)
+            {
+                result.AddRange(GetProjectTree(child.DealNum, projectList));
+            }
+
+            return result;
+        }
+
+
+        /// <summary>
         /// 获取要同步的项目台账
         /// </summary>
         /// <returns></returns>
@@ -123,37 +148,79 @@ namespace U9SyncService
                 $"SELECT * FROM ProjectPaymentLine WHERE RefId in({string.Join(",", refIds)}) ORDER BY RefId ,Id",
                 dbName: DbNames.Third.ToString());
 
+            // 项目树数据：母项目、子项目、孙项目
+            var cbProjects = (await _projectRepo.QueryAsync(@"SELECT * FROM CV_Project",
+                dbName: DbNames.Middle.ToString())).ToList();
+
+            // 所有已填写销售合同的台账，用来生成 ContractLines
+            var allContracts = (await _projectLedgerRepo.QueryAsync(
+                @"SELECT *   FROM V_ProjectLedger  WHERE ContractAmount IS NOT NULL  AND ProjectNum IS NOT NULL",
+                dbName: DbNames.Third.ToString())).ToList();
+
+            // 母项目台账中 所有子项目的合同
+            var contracts = await _projectLedgerRepo.QueryAsync("select * from CV_Project", dbName: DbNames.Middle.ToString());
 
             foreach (var ledger in ledgers)
             {
                 ledger.ProRecBillStage = stages.Where(o => o.RefId == ledger.RefId).ToList();
+
+                if (string.IsNullOrWhiteSpace(ledger.ProjectNum))
+                {
+                    ledger.ContractLines = new List<ProjectContractLine>();
+                    continue;
+                }
+                var projectTree = GetProjectTree(ledger.ProjectNum, cbProjects);
+                var projectNums = projectTree.Select(p => p.DealNum).Distinct().ToHashSet();
+
+                int lineNum = 1;
+                ledger.ContractLines = allContracts
+                    .Where(c=>projectNums.Contains(c.ProjectNum))
+                    .OrderBy(c=>c.SignedDate)
+                    .Select(s => new ProjectContractLine
+                {
+                    LineNum = lineNum++,
+                    Subproject = s.ProjectNum,
+                    ContractAmount = s.ContractAmount,
+                    ContractSignDate = s.SignedDate,
+                    ContractType = s.ContractType,
+
+                }).ToList();
             }
 
 
             return ledgers.ToList();
         }
 
-        public async Task WriteBack(string SourceKey, string? CbCode, string ErrorMsg)
+        public async Task WriteBack(string SourceKey, string? CbCode, string ErrorMsg,bool success,bool isEdit)
         {
-            bool IsSuccess = !string.IsNullOrEmpty(CbCode);
+            var code = ErrorMsg.StartsWith("205-重名创建成功") ? 205 : (success ? 200 : 300);
 
             switch (SourceKey.Substring(0, 1))
             {
                 case "C":
-                    await _accountRepo.ExecuteAsync("UPDATE Account SET Status = @Status, U9ErrorMsg = @ErrorMsg,U9Code = @CbCode WHERE U9Code is null and SicCode = @SourceKey",
-                    new { SourceKey, Status = IsSuccess ? 200 : 300, ErrorMsg, CbCode }, dbName: DbNames.Third.ToString());
+                    if (isEdit)
+                    {
+                        await _accountRepo.ExecuteAsync("UPDATE Account SET Status = @Status, U9ErrorMsg = @ErrorMsg WHERE U9Code is null and SicCode = @SourceKey",
+                        new { SourceKey, Status = code, ErrorMsg }, dbName: DbNames.Third.ToString());
+                    }
+                    else
+                    {
+                        await _accountRepo.ExecuteAsync("UPDATE Account SET Status = @Status,U9Code = @CbCode, U9ErrorMsg = @ErrorMsg WHERE (U9Code is null or Status ='201') and SicCode = @SourceKey",
+                       new { SourceKey, Status = code, ErrorMsg,CbCode }, dbName: DbNames.Third.ToString());
+                    }
+                   
                     break;
                 case "P":
                     if (SourceKey.Length > 9)
                     {
                         await _accountRepo.ExecuteAsync("UPDATE Project SET U9ErrorMsg = @ErrorMsg,U9Code = @CbCode WHERE DealNum = @SourceKey",
-                        new { SourceKey, ErrorMsg, CbCode = IsSuccess ? 200 : 300 }, dbName: DbNames.Third.ToString());
+                        new { SourceKey, ErrorMsg, CbCode = success ? 200 : 300 }, dbName: DbNames.Third.ToString());
                         
                     }
                     else
                     {
                         await _accountRepo.ExecuteAsync("UPDATE Deal SET U9ErrorMsg = @ErrorMsg,U9Code = @CbCode WHERE DealNum = @SourceKey",
-                        new { SourceKey, ErrorMsg, CbCode = IsSuccess ? 200 : 300 }, dbName: DbNames.Third.ToString());
+                        new { SourceKey, ErrorMsg, CbCode = success ? 200 : 300 }, dbName: DbNames.Third.ToString());
                         
                     }
                     break;
@@ -222,6 +289,6 @@ namespace U9SyncService
         Task RefreshSyncQueue(string CbCode);
         Task SyncAccounts();
         Task SyncProjects(string? projectNum = null);
-        Task WriteBack(string SourceKey, string CbCode, string ErrorMsg);
+        Task WriteBack(string SourceKey, string? CbCode, string ErrorMsg, bool success, bool isEdit);
     }
 }

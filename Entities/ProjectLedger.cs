@@ -27,5 +27,7 @@ namespace U9SyncService.Entities
         public int AccountId { get; set; }
 
         public List<ProjectPaymentLine> ProRecBillStage { get; set; } = new();
+
+        public List<ProjectContractLine> ContractLines { get; set; } = new();
     }
 }

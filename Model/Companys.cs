@@ -9,7 +9,7 @@ namespace U9SyncService.Model
 {
     public class Dicts
     {
-    
+
         public class Company
         {
             public string CompanyNo { get; set; }
@@ -53,5 +53,8 @@ namespace U9SyncService.Model
             return Companies
             .FirstOrDefault(c => c.Code == code)?.Name ?? string.Empty;
         }
+     
+
+
     }
 }
