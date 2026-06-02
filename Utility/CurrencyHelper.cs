@@ -27,6 +27,19 @@ namespace U9SyncService.Utility
             return null;
         }
 
+        public static string GetTaxCode(string? tax)
+        {
+            // 根据货币名称查找对应的 key
+            foreach (var kvp in CurrencyDic)
+            {
+                if (kvp.Value == tax)
+                {
+                    return kvp.Key;
+                }
+            }
+
+            return "TS01";
+        }
 
         private  static Dictionary<string, string> CurrencyDic = new Dictionary<string, string>
         {
@@ -45,6 +58,12 @@ namespace U9SyncService.Utility
             { "C012", "加元" },
             { "C013", "雷亚尔" },
             { "CRM01", "马来西亚林吉特" }
+        };
+
+        private static Dictionary<string, string> CustomerTaxDic = new Dictionary<string, string>
+        {
+            {"TS01","13%" },
+            {"TS02" ,"9%"}
         };
 
     }

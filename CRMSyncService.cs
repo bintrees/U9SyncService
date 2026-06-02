@@ -4,6 +4,7 @@ using System.Collections;
 using System.Collections.Generic;
 using System.Data;
 using System.Linq;
+using System.Reflection.Emit;
 using System.Text;
 using System.Text.Json;
 using System.Threading.Tasks;
@@ -49,12 +50,13 @@ namespace U9SyncService
         public async Task SyncAccounts()
         {
             var accounts = await _accountRepo.QueryAsync(
-                "select T1.ClientName as Account,T0.* from CV_Account T0 INNER JOIN [MT_CRM].[dbo].[V_ProjectLedger] T1 ON T1.AccountId=T0.AccountId",
+                "select T0.* from CV_Account T0 INNER JOIN [MT_CRM].[dbo].[V_ProjectLedger] T1 ON T1.AccountId=T0.AccountId", // T1.ClientName as Account,
                 dbName: DbNames.Middle.ToString());
 
             var existQueues = await GetQueuesAsync("CustomerCreate");
             var sicCodes = existQueues.Select(p => p.SourceKey).ToList();
             var toInsert = accounts.Where(p => !sicCodes.Contains(p.SicCode)).ToList();
+            var toUpdate = accounts.Where(p => p.Refresh ==1 && p.U9Code !=null).ToList();
 
             foreach (var acc in toInsert)
             {
@@ -68,11 +70,17 @@ namespace U9SyncService
 
                 await InsertQueue(queue);
             }
+            // 更新已存在队列，标记 CRM 手工刷新
+            foreach (var acc in toUpdate)
+            {
+                await UpdateQueue(acc.SicCode);
+            }
+            //await Task.WhenAll(toUpdate.Select(acc => UpdateQueue(acc.SicCode))); //批量异步：
         }
 
         public async Task<IEnumerable<UserInfo>> GetUsers()
         {
-            return await _userRepo.QueryAsync("select b.Territory,a.UserName,b.Owner as Manager from UserTable a left join territory b on a.Territory =b.TerritoryId where Stopped=0 order by b.Territory",
+            return await _userRepo.QueryAsync("select b.Territory,a.UserName,b.Owner as Manager from UserTable a left join territory b on a.Territory =b.TerritoryId where b.Territory is not null order by b.Territory",
                dbName: DbNames.Third.ToString()
                 );
 
@@ -80,6 +88,7 @@ namespace U9SyncService
 
         public async Task SyncProjects(string? projectNum = null)
         {
+
             string sql = projectNum == null ? "select a.* from CV_Project a Left JOIN MT_CRM..CT_Project b on b.ProjectNum=a.DealNum where a.status is null and (a.CreateDate >='2026-01-01' or b.CT_ProjectId is not null ) order by ProjectId desc" :
                  $"select * from CV_Project where DealNum='{projectNum}'";
  
@@ -193,20 +202,30 @@ namespace U9SyncService
 
         public async Task WriteBack(string SourceKey, string? CbCode, string ErrorMsg,bool success,bool isEdit)
         {
-            var code = ErrorMsg.StartsWith("205-重名创建成功") ? 205 : (success ? 200 : 300);
+            string[] _code = { "205", "206" };
+            var startWith = ErrorMsg?.Length >= 3 ? ErrorMsg.Substring(0, 3) : "";
+            var code = _code.Contains(startWith) ? startWith : (success ? "200" : "300");
 
             switch (SourceKey.Substring(0, 1))
             {
                 case "C":
-                    if (isEdit)
+                    if (isEdit && code == "206")
                     {
-                        await _accountRepo.ExecuteAsync("UPDATE Account SET Status = @Status, U9ErrorMsg = @ErrorMsg WHERE U9Code is null and SicCode = @SourceKey",
-                        new { SourceKey, Status = code, ErrorMsg }, dbName: DbNames.Third.ToString());
+                        await _accountRepo.ExecuteAsync("UPDATE Account SET Refresh=0,U9Code = @CbCode, U9ErrorMsg = @ErrorMsg WHERE  SicCode = @SourceKey",
+                        new { SourceKey, ErrorMsg, CbCode }, dbName: DbNames.Third.ToString());
+
+
+                    }
+                    else if (isEdit)
+                    {
+                        await _accountRepo.ExecuteAsync("UPDATE Account SET Refresh=0, U9ErrorMsg = @ErrorMsg WHERE  SicCode = @SourceKey",
+                        new { SourceKey, ErrorMsg }, dbName: DbNames.Third.ToString());
+
                     }
                     else
                     {
                         await _accountRepo.ExecuteAsync("UPDATE Account SET Status = @Status,U9Code = @CbCode, U9ErrorMsg = @ErrorMsg WHERE (U9Code is null or Status ='201') and SicCode = @SourceKey",
-                       new { SourceKey, Status = code, ErrorMsg,CbCode }, dbName: DbNames.Third.ToString());
+                       new { SourceKey, Status = code, ErrorMsg, CbCode }, dbName: DbNames.Third.ToString());
                     }
                    
                     break;
@@ -235,7 +254,8 @@ namespace U9SyncService
 
             try
             {
-                await _queueRepo.ExecuteAsync("update SyncQueue set EditFlag =1 ,RetryCount =1 where State =1 and CbCode =@CbCode", new { CbCode }, dbName: DbNames.Main.ToString());
+                await _queueRepo.ExecuteAsync("update SyncQueue set RetryCount=2,EditFlag=1  where State =1 and CbCode =@CbCode", new { CbCode }, dbName: DbNames.Main.ToString());
+            
             }
             catch (Exception ex)
             {
@@ -259,6 +279,20 @@ namespace U9SyncService
             catch (Exception ex)
             {
                 _logger.LogError(ex, @$"Insert失败:{ex.Message}");
+            }
+
+        }
+
+        private async Task UpdateQueue(string sourceKey)
+        {
+            try
+            {
+                await _queueRepo.ExecuteAsync("update SyncQueue set RetryCount=2,EditFlag=1  where State =1 and SourceKey =@SourceKey", new { SourceKey =sourceKey }, dbName: DbNames.Main.ToString());
+
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, $"更新队列异常: {sourceKey}");
             }
 
         }

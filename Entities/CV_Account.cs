@@ -31,7 +31,7 @@ namespace U9SyncService.Entities
         public string AccountType { get; set; }
         public string ClientState { get; set; }
         public DateTime CreateDate { get; set; }
-
+        public int Refresh { get; set; }
         public string GetCurrency(string? Currency = null)
         {
             if (AccountType == "国内客户")
@@ -40,6 +40,15 @@ namespace U9SyncService.Entities
             }
             return CurrencyHelper.GetCurrencyKey(Currency);
 
+        }
+
+        public string GetTaxCode()
+        {
+            if (AccountType == "国内客户")
+            {
+                return "TS01";
+            }
+            return "TS20";
         }
 
 

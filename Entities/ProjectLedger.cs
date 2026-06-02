@@ -1,6 +1,7 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Runtime.CompilerServices;
 using System.Text;
 using System.Threading.Tasks;
 
@@ -24,10 +25,16 @@ namespace U9SyncService.Entities
         public string TransType { get; set; }
         public int State { get; set; }
         public string LedCode { get; set; }
+        public string? Tax { get; set; }
         public int AccountId { get; set; }
 
         public List<ProjectPaymentLine> ProRecBillStage { get; set; } = new();
 
         public List<ProjectContractLine> ContractLines { get; set; } = new();
+
+        public string GetLedgerTax()
+        {
+            return "";
+        }
     }
 }
